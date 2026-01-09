@@ -149,7 +149,7 @@ async function openAndSync(editor?: vscode.TextEditor, opts?: { invokedByAuto?: 
   startSync(left, right);
 
   // Show commit info for the counterpart without stealing focus.
-  const hash = await tryGetGitHash(counterpartPath, workspaceRoot);
+  const hash = await tryGetGitHash(counterpartPath);
   if (hash) {
     await showInfoPane(
       'MDN Translating Helper: Source commit',
@@ -437,9 +437,26 @@ async function closeLastRightTab(): Promise<void> {
   lastRightUri = undefined;
 }
 
-async function tryGetGitHash(filePath: string, workspaceRoot: string): Promise<string | undefined> {
+async function tryGetGitHash(filePath: string): Promise<string | undefined> {
+  const cwd = path.dirname(filePath);
+  let repoRoot: string | undefined;
+
   try {
-    const { stdout } = await execFileAsync('git', ['-C', workspaceRoot, 'log', '-1', '--format=%H', '--', filePath], {
+    const { stdout } = await execFileAsync('git', ['-C', cwd, 'rev-parse', '--show-toplevel'], {
+      timeout: 4000,
+      maxBuffer: 1024 * 1024,
+    });
+    repoRoot = stdout.trim();
+  } catch {
+    return undefined;
+  }
+
+  if (!repoRoot) return undefined;
+
+  const rel = path.relative(repoRoot, filePath);
+
+  try {
+    const { stdout } = await execFileAsync('git', ['-C', repoRoot, 'log', '-1', '--format=%H', '--', rel], {
       timeout: 5000,
       maxBuffer: 1024 * 1024,
     });
@@ -483,7 +500,7 @@ async function updateSourceHash(): Promise<void> {
     return;
   }
 
-  const hash = await tryGetGitHash(counterpartPath, workspaceRoot);
+  const hash = await tryGetGitHash(counterpartPath);
   if (!hash) {
     await showInfoPane('MDN Translating Helper', 'Could not retrieve git hash for the content file.');
     return;
