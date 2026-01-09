@@ -2,7 +2,7 @@
   "name": "mdn-translating-helper",
   "displayName": "MDN Translating Helper",
   "description": "Automatically pair translated-content docs with content/en-us and sync scrolling while translating.",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "publisher": "Hoarfroster",
   "repository": {
     "type": "git",
