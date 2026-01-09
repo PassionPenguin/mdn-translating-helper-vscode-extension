@@ -1,0 +1,61 @@
+{
+  "name": "mdn-translating-helper",
+  "displayName": "MDN Translating Helper",
+  "description": "Automatically pair translated-content docs with content/en-us and sync scrolling while translating.",
+  "version": "0.0.1",
+  "publisher": "Hoarfroster",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/PassionPenguin/mdn-translating-helper-vscode-extension"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:mdnHelper.activate",
+    "onCommand:mdnHelper.deactivate"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "mdnHelper.activate",
+        "title": "MDN Translating Helper: Activate"
+      },
+      {
+        "command": "mdnHelper.deactivate",
+        "title": "MDN Translating Helper: Deactivate"
+      }
+    ],
+    "configuration": {
+      "title": "MDN Translating Helper",
+      "properties": {
+        "mdnSync.defaultLocale": {
+          "type": "string",
+          "default": "zh-cn",
+          "description": "Locale to use when mapping from content/en-us to translated-content." 
+        },
+        "mdnSync.throttleMs": {
+          "type": "number",
+          "default": 60,
+          "minimum": 0,
+          "description": "Throttle for scroll synchronization events (milliseconds)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint .",
+    "vscode:prepublish": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.30",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.5.4"
+  }
+}
