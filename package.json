@@ -2,7 +2,7 @@
   "name": "mdn-translating-helper",
   "displayName": "MDN Translating Helper",
   "description": "Automatically pair translated-content docs with content/en-us and sync scrolling while translating.",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "publisher": "Hoarfroster",
   "repository": {
     "type": "git",
@@ -16,7 +16,8 @@
   ],
   "activationEvents": [
     "onCommand:mdnHelper.activate",
-    "onCommand:mdnHelper.deactivate"
+    "onCommand:mdnHelper.deactivate",
+    "onCommand:mdnHelper.updateSourceHash"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -28,6 +29,10 @@
       {
         "command": "mdnHelper.deactivate",
         "title": "MDN Translating Helper: Deactivate"
+      },
+      {
+        "command": "mdnHelper.updateSourceHash",
+        "title": "MDN Translating Helper: Update source hash"
       }
     ],
     "configuration": {

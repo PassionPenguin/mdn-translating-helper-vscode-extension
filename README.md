@@ -31,8 +31,7 @@ Then, in the root folder, run “MDN Translating Helper: Activate”, then focus
 
 You can find and run these commands in the command palettes:
 
-- **MDN Translating Helper: Activate** (`mdnHelper.activate`)
-- **MDN Translating Helper: Deactivate** (`mdnHelper.deactivate`)
+ - **MDN Translating Helper: Update source hash** (`mdnHelper.updateSourceHash`)
 
 ## Settings
 
@@ -44,3 +43,4 @@ You can set the following parameters in the settings.
 ## Disclaimers
 
 This project is not affiliated with the MDN project.
+ - When a counterpart is opened, the helper tries to show its latest git commit hash in a side info pane. Use “Update source hash” to write that hash into the front matter `sourceCommit` of the active file (in translated-content).

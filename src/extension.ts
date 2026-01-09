@@ -1,5 +1,7 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 
 type BlockType = 'heading' | 'code' | 'list' | 'image' | 'paragraph';
 
@@ -24,6 +26,7 @@ let isResyncing = false;
 const missingCounterparts = new Map<string, number>();
 let lastRightUri: vscode.Uri | undefined;
 let helperEnabled = false;
+const execFileAsync = promisify(execFile);
 
 export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
@@ -39,6 +42,12 @@ export function activate(context: vscode.ExtensionContext) {
       stopSync();
       await closeLastRightTab();
       vscode.window.setStatusBarMessage('MDN Translating Helper: inactive', 2000);
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('mdnHelper.updateSourceHash', async () => {
+      await updateSourceHash();
     })
   );
 
@@ -138,6 +147,15 @@ async function openAndSync(editor?: vscode.TextEditor, opts?: { invokedByAuto?: 
   const right = left === active ? opened : active;
 
   startSync(left, right);
+
+  // Show commit info for the counterpart without stealing focus.
+  const hash = await tryGetGitHash(counterpartPath, workspaceRoot);
+  if (hash) {
+    await showInfoPane(
+      'MDN Translating Helper: Source commit',
+      `File: ${counterpartPath}\nCommit: ${hash}`
+    );
+  }
 }
 
 function startSync(left: vscode.TextEditor, right: vscode.TextEditor): void {
@@ -388,7 +406,7 @@ async function showInfoPane(title: string, body: string): Promise<void> {
   await vscode.window.showTextDocument(doc, {
     viewColumn: vscode.ViewColumn.Beside,
     preserveFocus: true,
-    preview: false,
+    preview: true,
   });
 }
 
@@ -417,4 +435,119 @@ async function closeLastRightTab(): Promise<void> {
     }
   }
   lastRightUri = undefined;
+}
+
+async function tryGetGitHash(filePath: string, workspaceRoot: string): Promise<string | undefined> {
+  try {
+    const { stdout } = await execFileAsync('git', ['-C', workspaceRoot, 'log', '-1', '--format=%H', '--', filePath], {
+      timeout: 5000,
+      maxBuffer: 1024 * 1024,
+    });
+    const hash = stdout.trim();
+    return hash.length ? hash : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function updateSourceHash(): Promise<void> {
+  const active = vscode.window.activeTextEditor;
+  if (!active) {
+    await showInfoPane('MDN Translating Helper', 'No active editor to update.');
+    return;
+  }
+  if (!isFileDocument(active.document) || !isFilesPath(active.document.uri.fsPath)) {
+    await showInfoPane('MDN Translating Helper', 'Active file is not under translated-content/files/...');
+    return;
+  }
+
+  const activePath = active.document.uri.fsPath;
+  const workspaceRoot = vscode.workspace.getWorkspaceFolder(active.document.uri)?.uri.fsPath
+    ?? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!workspaceRoot) {
+    await showInfoPane('MDN Translating Helper', 'No workspace folder found.');
+    return;
+  }
+
+  const cfg = vscode.workspace.getConfiguration('mdnSync');
+  const defaultLocale = String(cfg.get('defaultLocale', 'zh-cn'));
+
+  const counterpartPath = mapToCounterpart({
+    filePath: activePath,
+    workspaceRoot,
+    defaultLocale,
+  });
+
+  if (!counterpartPath) {
+    await showInfoPane('MDN Translating Helper', 'Cannot map this file to content/files/en-us/.');
+    return;
+  }
+
+  const hash = await tryGetGitHash(counterpartPath, workspaceRoot);
+  if (!hash) {
+    await showInfoPane('MDN Translating Helper', 'Could not retrieve git hash for the content file.');
+    return;
+  }
+
+  const updated = await writeSourceCommit(active.document, hash);
+  if (!updated) {
+    await showInfoPane('MDN Translating Helper', 'Failed to update sourceCommit in front matter.');
+    return;
+  }
+
+  await vscode.window.showTextDocument(active.document, { preserveFocus: false });
+  vscode.window.setStatusBarMessage(`Updated sourceCommit to ${hash}`, 3000);
+}
+
+async function writeSourceCommit(doc: vscode.TextDocument, hash: string): Promise<boolean> {
+  const fullText = doc.getText();
+  const lines = fullText.split(/\r?\n/);
+
+  let start = -1;
+  let end = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].trim() === '---') {
+      if (start === -1) {
+        start = i;
+      } else {
+        end = i;
+        break;
+      }
+    }
+  }
+
+  const newLine = (idx: number) => (doc.eol === vscode.EndOfLine.CRLF ? '\r\n' : '\n');
+  const nl = newLine(0);
+
+  if (start === -1 || end === -1 || end <= start) {
+    const fm = ['---', `sourceCommit: ${hash}`, '---', ''];
+    const edit = new vscode.WorkspaceEdit();
+    edit.insert(doc.uri, new vscode.Position(0, 0), fm.join(nl));
+    const applied = await vscode.workspace.applyEdit(edit);
+    return applied;
+  }
+
+  // front matter exists
+  let found = false;
+  const fmLines = lines.slice(start + 1, end);
+  for (let i = 0; i < fmLines.length; i++) {
+    const trimmed = fmLines[i].trimStart();
+    if (trimmed.startsWith('sourceCommit:')) {
+      const indent = fmLines[i].slice(0, fmLines[i].length - trimmed.length);
+      fmLines[i] = `${indent}sourceCommit: ${hash}`;
+      found = true;
+      break;
+    }
+  }
+
+  if (!found) {
+    fmLines.push(`sourceCommit: ${hash}`);
+  }
+
+  const newFm = ['---', ...fmLines, '---'].join(nl);
+  const edit = new vscode.WorkspaceEdit();
+  const fmRange = new vscode.Range(new vscode.Position(start, 0), new vscode.Position(end, lines[end].length));
+  edit.replace(doc.uri, fmRange, newFm);
+  const applied = await vscode.workspace.applyEdit(edit);
+  return applied;
 }
