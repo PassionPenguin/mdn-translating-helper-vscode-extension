@@ -56,7 +56,15 @@ export function activate(context: vscode.ExtensionContext) {
       // Auto-resync when user switches tabs (only when helper is enabled), but ignore when focus moves to the counterpart pane.
       if (!helperEnabled || !editor) return;
       if (!isFileDocument(editor.document)) return;
-      if (session?.right && sameDocument(editor.document, session.right.document)) return;
+      const inExistingSession =
+        !!session &&
+        (sameDocument(editor.document, session.left.document) || sameDocument(editor.document, session.right.document));
+      const bothVisible =
+        !!session &&
+        isDocumentVisible(session.left.document) &&
+        isDocumentVisible(session.right.document);
+
+      if (inExistingSession && bothVisible) return;
       if (isResyncing) return;
 
       isResyncing = true;
@@ -148,14 +156,6 @@ async function openAndSync(editor?: vscode.TextEditor, opts?: { invokedByAuto?: 
 
   startSync(left, right);
 
-  // Show commit info for the counterpart without stealing focus.
-  const hash = await tryGetGitHash(counterpartPath);
-  if (hash) {
-    await showInfoPane(
-      'MDN Translating Helper: Source commit',
-      `File: ${counterpartPath}\nCommit: ${hash}`
-    );
-  }
 }
 
 function startSync(left: vscode.TextEditor, right: vscode.TextEditor): void {
@@ -397,6 +397,10 @@ function isFileDocument(doc: vscode.TextDocument): boolean {
   return doc.uri.scheme === 'file';
 }
 
+function isDocumentVisible(doc: vscode.TextDocument): boolean {
+  return vscode.window.visibleTextEditors.some((e) => sameDocument(e.document, doc));
+}
+
 async function showInfoPane(title: string, body: string): Promise<void> {
   const doc = await vscode.workspace.openTextDocument({
     content: `${title}\n\n${body}`,
@@ -438,6 +442,12 @@ async function closeLastRightTab(): Promise<void> {
 }
 
 async function tryGetGitHash(filePath: string): Promise<string | undefined> {
+  try {
+    await vscode.workspace.fs.stat(vscode.Uri.file(filePath));
+  } catch {
+    return undefined;
+  }
+
   const cwd = path.dirname(filePath);
   let repoRoot: string | undefined;
 
@@ -455,16 +465,24 @@ async function tryGetGitHash(filePath: string): Promise<string | undefined> {
 
   const rel = path.relative(repoRoot, filePath);
 
-  try {
-    const { stdout } = await execFileAsync('git', ['-C', repoRoot, 'log', '-1', '--format=%H', '--', rel], {
-      timeout: 5000,
-      maxBuffer: 1024 * 1024,
-    });
-    const hash = stdout.trim();
-    return hash.length ? hash : undefined;
-  } catch {
-    return undefined;
-  }
+  const runGitLog = async (target: string): Promise<string | undefined> => {
+    try {
+      const { stdout } = await execFileAsync('git', ['-C', repoRoot!, 'log', '-1', '--format=%H', '--', target], {
+        timeout: 5000,
+        maxBuffer: 1024 * 1024,
+      });
+      const hash = stdout.trim();
+      return hash.length ? hash : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+
+  const normalizedRel = rel.replaceAll(path.sep, '/');
+  const hash = await runGitLog(normalizedRel);
+  if (hash) return hash;
+
+  return runGitLog(filePath);
 }
 
 async function updateSourceHash(): Promise<void> {
@@ -500,9 +518,18 @@ async function updateSourceHash(): Promise<void> {
     return;
   }
 
+  const counterpartUri = vscode.Uri.file(counterpartPath);
+  if (!(await fileExists(counterpartUri))) {
+    await showInfoPane('MDN Translating Helper', `Cannot find content file at:\n${counterpartPath}`);
+    return;
+  }
+
   const hash = await tryGetGitHash(counterpartPath);
   if (!hash) {
-    await showInfoPane('MDN Translating Helper', 'Could not retrieve git hash for the content file.');
+    await showInfoPane(
+      'MDN Translating Helper',
+      `Could not retrieve git hash for the content file:\n${counterpartPath}`
+    );
     return;
   }
 
@@ -537,7 +564,7 @@ async function writeSourceCommit(doc: vscode.TextDocument, hash: string): Promis
   const nl = newLine(0);
 
   if (start === -1 || end === -1 || end <= start) {
-    const fm = ['---', `sourceCommit: ${hash}`, '---', ''];
+    const fm = ['---', 'l10n:', `  sourceCommit: ${hash}`, '---', ''];
     const edit = new vscode.WorkspaceEdit();
     edit.insert(doc.uri, new vscode.Position(0, 0), fm.join(nl));
     const applied = await vscode.workspace.applyEdit(edit);
@@ -545,26 +572,61 @@ async function writeSourceCommit(doc: vscode.TextDocument, hash: string): Promis
   }
 
   // front matter exists
-  let found = false;
   const fmLines = lines.slice(start + 1, end);
-  for (let i = 0; i < fmLines.length; i++) {
-    const trimmed = fmLines[i].trimStart();
-    if (trimmed.startsWith('sourceCommit:')) {
-      const indent = fmLines[i].slice(0, fmLines[i].length - trimmed.length);
-      fmLines[i] = `${indent}sourceCommit: ${hash}`;
-      found = true;
-      break;
-    }
-  }
+  const updatedFmLines = upsertL10nSourceCommit(fmLines, hash);
 
-  if (!found) {
-    fmLines.push(`sourceCommit: ${hash}`);
-  }
-
-  const newFm = ['---', ...fmLines, '---'].join(nl);
+  const newFm = ['---', ...updatedFmLines, '---'].join(nl);
   const edit = new vscode.WorkspaceEdit();
   const fmRange = new vscode.Range(new vscode.Position(start, 0), new vscode.Position(end, lines[end].length));
   edit.replace(doc.uri, fmRange, newFm);
   const applied = await vscode.workspace.applyEdit(edit);
   return applied;
+}
+
+function upsertL10nSourceCommit(fmLines: string[], hash: string): string[] {
+  // Remove any legacy top-level sourceCommit.
+  const lines = fmLines.filter((line) => !line.trimStart().startsWith('sourceCommit:'));
+
+  let l10nIdx = -1;
+  let l10nIndent = '';
+
+  for (let i = 0; i < lines.length; i++) {
+    const trimmedStart = lines[i].trimStart();
+    if (trimmedStart.startsWith('l10n:')) {
+      l10nIdx = i;
+      l10nIndent = lines[i].slice(0, lines[i].length - trimmedStart.length);
+      break;
+    }
+  }
+
+  if (l10nIdx === -1) {
+    lines.push('l10n:', `  sourceCommit: ${hash}`);
+    return lines;
+  }
+
+  const defaultChildIndent = l10nIndent + '  ';
+  let childIndent = defaultChildIndent;
+  let blockEnd = lines.length;
+
+  for (let i = l10nIdx + 1; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    if (!trimmed) continue;
+
+    const trimmedStart = lines[i].trimStart();
+    const indent = lines[i].slice(0, lines[i].length - trimmedStart.length);
+
+    if (indent.length <= l10nIndent.length) {
+      blockEnd = i;
+      break;
+    }
+
+    if (trimmedStart.startsWith('sourceCommit:')) {
+      lines[i] = `${childIndent}sourceCommit: ${hash}`;
+      return lines;
+    }
+  }
+
+  const insertAt = blockEnd;
+  lines.splice(insertAt, 0, `${childIndent}sourceCommit: ${hash}`);
+  return lines;
 }
